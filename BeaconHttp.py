@@ -2,7 +2,6 @@ import sys
 import time
 import json
 import random
-from pathlib import Path
 
 import requests
 
@@ -93,6 +92,9 @@ CONFIG_KEY_URI = "uri"
 CONFIG_KEY_CLIENT = "client"
 CONFIG_KEY_HEADERS = "headers"
 
+ERROR_MISSING_ARGUMENT = "Error: missing argument"
+SLEEP_DIVISOR_SECONDS = 1000
+
 
 class BeaconHttp(Beacon):
 
@@ -180,7 +182,7 @@ class BeaconHttp(Beacon):
 def main() -> int:
 
     if len(sys.argv) < 3:
-        print('Error: missing argument')
+        print(ERROR_MISSING_ARGUMENT)
         sys.exit(1)
 
     url = sys.argv[1]
@@ -194,7 +196,7 @@ def main() -> int:
 
         beaconHttp.runTasks()
 
-        time.sleep(beaconHttp.sleepTimeMs/1000)
+        time.sleep(beaconHttp.sleepTimeMs / SLEEP_DIVISOR_SECONDS)
 
     return 0
 
