@@ -1,7 +1,9 @@
-# Exploration C2 Implant in Python
+# Exploration C2 HTTP Beacon (Python)
 
-## What it is
+## Overview
 
-Exploration is a rudimentary red team command and control frameworks (https://github.com/maxDcb/C2TeamServer).  
-This repository contain the Implant in Python to target unix.
-This development is in education exercises to tackle well know red teaming concepts.
+This repository hosts a small Python implementation of an HTTP beacon compatible with the [Exploration C2 framework](https://github.com/maxDcb/C2TeamServer).
+
+## Purpose
+
+The project is intended for educational exploration of common red teaming concepts while demonstrating how a lightweight beacon can communicate with the Exploration C2 server over HTTP.
