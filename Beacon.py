@@ -5,7 +5,6 @@ import socket
 import os
 import platform
 import subprocess
-# import psutil
 from pathlib import Path
 from typing import Dict, List
 
@@ -336,19 +335,6 @@ class Beacon:
 
             elif instruction == "ps":
                 result = subprocess.run([PS_COMMAND], shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).stdout.decode('utf-8')
-                # try:
-                #     # print( list(psutil.Process().as_dict().keys()))
-                #     for proc in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
-                #         cmdLine = ""
-                #         for cmd in proc.info["cmdline"]:
-                #             cmdLine += cmd + " "
-                #         if cmdLine.strip() == "":  
-                #             cmdLine = proc.info["name"]
-
-                #         result += proc.info["username"] + " " + str(proc.info["pid"]) + " " + cmdLine
-                #         result += "\n"
-                # except:
-                #     result = "ps failed"
 
             elif instruction == "cd":
                 os.chdir(cmd)
