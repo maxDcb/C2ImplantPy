@@ -3,7 +3,3 @@
 ## Overview
 
 This repository hosts a small Python implementation of an HTTP beacon compatible with the [Exploration C2 framework](https://github.com/maxDcb/C2TeamServer).
-
-## Purpose
-
-The project is intended for educational exploration of common red teaming concepts while demonstrating how a lightweight beacon can communicate with the Exploration C2 server over HTTP.
