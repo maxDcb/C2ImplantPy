@@ -147,7 +147,7 @@ class Beacon:
 
     def _register_instruction_handlers(self) -> None:
         handlers = {
-            "modulecmd": self._handle_module_cmd,
+            "loadmodule": self._handle_load_module,
             "change_directory": self._handle_change_directory,
             "changedirectory": self._handle_change_directory,
             "cd": self._handle_change_directory,
@@ -425,8 +425,8 @@ class Beacon:
         # cleaning
         self.tasks.clear()
 
-    def _handle_module_cmd(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
-        return ("Module commands are not required for this implant.", b"")
+    def _handle_load_module(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return ("Load Module is not required for this implant.", b"")
 
     def _handle_change_directory(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
         target = cmd or args or input_file or "."
